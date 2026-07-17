@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="author" content="Grzegorz Kromkowski" />
+  <meta name="description" content="A practical case study about replacing deprecated Recoil with Jotai and selectively introducing Redux Toolkit for explicit application flows." />
+  <title>Recoil is deprecated. Should we migrate to Jotai, Redux Toolkit, or use both?</title>
+  <link rel="icon" type="image/x-icon" href="./images/favicon.ico" />
+    <link rel="stylesheet" href="./style.css" />
+
+  <!-- jotai-redux docs: atomWithStore creates an atom from a Redux store and is two-way binding. -->
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero-inner">
+        <div class="eyebrow"><img class="eyebrow-icon" src="./images/mascot-icon.png" alt="" /> Case study · React state management</div>
+        <h1>Recoil is deprecated. Should we migrate to Jotai, Redux Toolkit, or use both?</h1>
+        <p class="lead">A practical architecture story: how a simple “we need to replace Recoil” task turned into a discussion about state ownership, server state, form state, and explicit application flows.</p>
+        <div class="meta-row"><span class="pill">React</span><span class="pill">Apollo Client</span><span class="pill">React Hook Form</span><span class="pill">Recoil → Jotai</span><span class="pill">Redux Toolkit</span></div>
+      </div>
+      <div class="hero-logo-panel" aria-label="Team logo"><img class="team-logo" src="./images/team-mascot-logo.png" alt="Team mascot logo" /></div>
+    </header>
+    <div class="layout">
+      <aside class="toc" aria-label="Table of contents"><h2>Contents</h2><ol>
+          <li><a href="#tldr">TL;DR</a></li><li><a href="#intro">Starting point</a></li><li><a href="#question">Not just Jotai vs Redux</a></li><li><a href="#recoil-map">Current Recoil state map</a></li><li><a href="#apollo-rhf">Apollo, Recoil and RHF</a></li><li><a href="#jotai">Why Jotai first</a></li><li><a href="#command">Command-in-state</a></li><li><a href="#polling">Coupon jobs / polling</a></li><li><a href="#redux">What RTK would change</a></li><li><a href="#profile">Profile / subsidiary context</a></li><li><a href="#filters">The rerenderFilters boundary</a></li><li><a href="#ownership">State ownership</a></li><li><a href="#plan">Migration plan</a></li><li><a href="#jotai-redux">Why not jotai-redux?</a></li>
+          </ol></aside>
+      <article class="article-card">
+        <section id="tldr">
+          <h2>TL;DR — should you read the whole thing?</h2>
+          <p class="intro">
+            A short version of the decision: Recoil had to be replaced, but the real question was not only which library to pick. It was who should own each kind of state.
+          </p>
+
+          <ul class="tldr-list">
+            <li>
+              <strong>Start boring.</strong>
+              Phase one should be a safe 1:1 Recoil → Jotai migration, with no intentional behavior changes
+            </li>
+            <li>
+              <strong>Jotai stays.</strong>
+              It is a good fit for lightweight atom state: navigation, sidebars, small shared UI flags, and simple Recoil replacements
+            </li>
+            <li>
+              <strong>Redux Toolkit is for process state.</strong>
+              It makes more sense for coupon jobs, polling, async lifecycle, session/meta-state, and flows that need better debugging
+            </li>
+            <li>
+              <strong>Apollo and React Hook Form still have ownership.</strong>
+              Apollo handles backend-data loading with careful cache policy, while RHF owns edited form values
+            </li>
+            <li>
+              <strong>The final decision is hybrid, but explicit.</strong>
+              Jotai and Redux Toolkit can coexist if their ownership boundaries stay clear
+            </li>
+          </ul>
+
+          <div class="quote">
+            The short answer: migrate Recoil to Jotai first, then introduce Redux Toolkit only where the application flow actually needs it
+          </div>
+        </section>
+
+
+
+        <section id="intro"><h2>Starting point</h2><p class="intro">In our project, we had been using Recoil for global or shared state for quite some time. It was not a single giant store holding the whole application, but Recoil appeared in several important areas: user session, roles, selected subsidiary, UI flags, promotion state, filters, coupon detail, and the flow related to generating coupons and polling background jobs.</p><p>For a long time, it worked well enough. We had atoms, selectors, a few hooks, and components that could communicate through shared state.</p><p>The problem did not start with a concrete bug in our application. It started with the risk of keeping an important part of the application on top of a library that no longer looked like a safe long-term choice. The official Recoil repository was archived and became read-only, the latest release was 0.7.7 from 2023, and there were practical concerns in the issue tracker around compatibility with newer React versions, for example React 19.</p><p>That did not mean our application suddenly stopped working. It meant that the next React upgrade or a larger ecosystem change could become our problem to solve.</p><div class="callout"><strong>This was not only a team preference:</strong> the public Recoil repository is archived/read-only, the latest release is 0.7.7 from 2023, and there is an open issue about React 19 support</div><p>The first intuition was simple: if Recoil needs to be replaced, the most natural candidate seems to be Jotai. And that really makes sense.</p><div class="quote">The first idea was straightforward: <code>Recoil → Jotai</code>. Small diff, lower risk, similar work with small state atoms</div><p>But then a second question appeared. If we are already touching state management, changing hooks, atoms, test wrappers and providers, should we use that moment to check whether the problem is only Recoil as a dependency, or also the way some application flows were built? It was also a good opportunity to see whether selected areas would benefit from a different tool — one that makes process flow more visible, easier to debug, and easier to test.</p></section>
+        <section id="question"><h2>This is not just “Jotai or Redux?”</h2><p>The more we looked at the current code, the less useful the question “which library is better?” became. The better question was: what types of state do we have in the application, and which tool fits each type best?</p><div class="split"><div class="mini-card"><h3>Not all state is the same</h3><ul><li>backend data</li><li>edited form data</li><li>global UI state</li><li>session and view meta-state</li><li>async processes</li><li>state used as a command</li></ul></div><div class="mini-card"><h3>The real shift</h3><p>If we call everything “global state”, we quickly start discussing libraries instead of ownership.</p><p>And ownership turned out to be the most important part of this migration.</p></div></div></section>
+        <section id="recoil-map"><h2>What our Recoil state looked like</h2><p>The first step was to look at what we actually had in Recoil. After grouping the atoms, the picture looked roughly like this.</p><h3>UI state</h3><span class="code-label">navigation-recoil-state.ts</span><pre><code>export const navigationRecoilState = atom&lt;{
+  isNavigationCollapsed: boolean;
+}&gt;({
+  key: 'navigation',
+  default: { isNavigationCollapsed: true },
+});</code></pre><span class="code-label">right-sidebar-recoil-state.ts</span><pre><code>export const rightSidebarRecoilState = atom&lt;RightSidebarRecoilStateType&gt;({
+  key: 'rightSidebar',
+  default: {
+    shouldRender: false,
+    isRightSidebarCollapsed: true,
+    showRevisions: false,
+    showComments: false,
+  },
+});</code></pre><div class="callout success"><strong>These are natural Jotai candidates.</strong> Simple UI state, atom-based model, small shared state between components. Redux Toolkit would probably be overkill here</div><h3>Session / meta-state</h3><span class="code-label">user-role-recoil-state.ts</span><pre><code>export const selectedRoleState = atom&lt;FrontendRole | null&gt;({
+  key: LOCAL_STORAGE_KEY_SELECTED_ROLE,
+  default: null,
+});
+
+export const availableRolesState = atom&lt;FrontendRole[]&gt;({
+  key: 'availableRoles',
+  default: [],
+});</code></pre><span class="code-label">allowed-subsidiaries-recoil-state.ts</span><pre><code>export const allowedSubsidiariesRecoilState =
+  atom&lt;AllowedSubsidiariesRecoilStateProps&gt;({
+    key: 'allowedSubsidiaries',
+    default: {} as AllowedSubsidiariesRecoilStateProps,
+  });</code></pre><p>This category is more interesting. On one hand, selected role, available roles and selected subsidiary can be moved to Jotai. On the other hand, this is no longer just UI. It is the user’s working context, and it affects queries, permissions, visible data and application behavior.</p><h3>Promotion state</h3><span class="code-label">promotion-recoil-state.ts</span><pre><code>export const promotionState = atom&lt;Promotion | undefined&gt;({
+  key: 'promotion',
+  default: undefined,
+});
+
+export const isLoadingState = atom&lt;boolean&gt;({
+  key: 'isLoading',
+  default: true,
+});
+
+export const isSavingState = atom&lt;boolean&gt;({
+  key: 'isSaving',
+  default: true,
+});
+
+export const modeState = atom&lt;Mode&gt;({
+  key: 'mode',
+  default: Mode.Create,
+});</code></pre><div class="callout warning"><strong>This is where we need to be careful.</strong> A promotion is backend data, an edited form, a screen lifecycle with create/edit/restore, a separate copy flag, and a save/validation process</div><p>We also should not mix the semantics of <code>mode</code> with copy flow. In the current code, <code>mode</code> describes the main way the screen and form are initialized: creating a new promotion, editing an existing one, or restoring. “Copy” is not the same kind of form lifecycle mode. It is additional information: the form may start from an existing promotion, but it eventually behaves like creating a new one.</p><span class="code-label">promotion-detail.tsx</span><pre><code>const isCreateOrRestoreMode = [
+  Mode.Create,
+  Mode.Restore,
+].includes(modeRecoilState);
+
+// copy-flow is a separate flag, not a separate Mode value
+const isCopiedPromotion = ...;</code></pre><p>For the migration, this means we should move <code>mode</code> values according to their current semantics, and treat copy flow as separate state or metadata. Otherwise, we may accidentally introduce a simplification in the new state layer that the old code did not actually have.</p><p>In the current implementation, promotion detail effectively works on three layers at the same time: Apollo loads the data, Recoil stores meta-state and a mirror of the full promotion, and React Hook Form stores the edited form values. This works, but it increases the risk of state ownership drifting apart.</p><span class="code-label">use-promotion.ts</span><pre><code>useEffect(() => {
+  if (queryData?.promotion) {
+    setPromotionState(queryData.promotion);
+    setIsExternalPromotion(!!queryData.promotion.partner);
+    setIsArchivedPromotion(
+      queryData.promotion.status === PromotionStatus.Archived
+    );
+  }
+}, [
+  queryData?.promotion,
+  setIsExternalPromotion,
+  setPromotionState,
+  setIsArchivedPromotion,
+]);</code></pre><p>In the first migration step, it is safer to preserve this behavior 1:1. Later, we can decide whether <code>promotionState</code> in global state still needs to be the full object, or only meta-state such as <code>mode</code>, <code>isSaving</code>, <code>isExternal</code>, and <code>currentPromotionId</code>.</p><h3>Filters</h3><span class="code-label">filter-recoil-state.ts</span><pre><code>type FilterRecoilStateType = {
+  rerenderFilters: boolean;
+};
+
+export const filterRecoilState = atom&lt;FilterRecoilStateType&gt;({
+  key: 'rerender-filters',
+  default: { rerenderFilters: false },
+});</code></pre><p>This atom looks simple, but semantically it is suspicious. <code>rerenderFilters</code> does not describe domain data. It is more of a technical trigger: “something should refresh”. From what we know, this mechanism appeared when Excel import via <code>Bulk maintenance</code> was added. The import updated React Hook Form values and manually added filter items, so a technical bridge was needed to force UI synchronization.</p><h3>Coupon jobs</h3><span class="code-label">coupon-jobs-recoil-state.ts</span><pre><code>export const couponJobsRecoilState = atom&lt;CouponJob[] | undefined&gt;({
+  key: 'couponJobs',
+  default: undefined,
+});
+
+export const couponJobsCheckRecoilState = atom&lt;boolean&gt;({
+  key: 'couponJobCheck',
+  default: true,
+});</code></pre><p>This is where the difference between dependency migration and architecture refactoring becomes visible. Jotai can easily take over these atoms and remove Recoil from the project, but it will not automatically change the fact that <code>couponJobsCheck</code> is a technical signal that starts an effect, not a description of real domain state. In other words: after the migration, the dependency may be safer, but the flow may remain just as scattered.</p></section>
+        <section id="apollo-rhf"><h2>Apollo, Recoil and React Hook Form: three layers to clean up</h2><h3>Apollo is already a server-state layer</h3><p>We use Apollo Client in the project. It is easy to think about Apollo only as a layer for executing GraphQL queries and mutations, but Apollo is also a cache. That means Apollo is already a kind of server-state layer.</p><p>In the current code, however, the situation is more complicated than the target ownership model. Promotion data comes from Apollo, is then mirrored into Recoil by <code>usePromotion</code>, and is then used as <code>defaultValues</code> for React Hook Form. So currently, not two but three layers participate in this flow.</p><pre><code>Apollo cache       → promotion
+Recoil             → promotion mirror + meta-state
+React Hook Form   → promotion form values</code></pre><div class="callout danger"><strong>Three sources of truth are usually not architecture.</strong> They are a future bug request. Apollo should remain the main backend-data loading layer, but that does not mean blindly trusting the cache</div><div class="callout warning"><strong>Important repository context:</strong> we cannot simply say “Apollo cache is the source of truth”. In many places, we intentionally force fresh data with <code>network-only</code>, because the data depends on the current user context: country, subsidiary, role, promotion revision, or job status</div><span class="code-label">use-promotion.ts</span><pre><code>useQuery(..., {
+  variables: {
+    id: promotionId,
+    revision: revisionNumber || 0,
+  },
+  fetchPolicy: fetchPolicy || 'network-only',
+});</code></pre><span class="code-label">promotion-detail.tsx</span><pre><code>await getValidation({
+  variables: {
+    promotion: promotionInput,
+    validateExternalData: true,
+  },
+  fetchPolicy: 'network-only',
+});</code></pre><span class="code-label">use-comments.ts</span><pre><code>useQuery(GET_COMMENTS_FOR_PROMOTION, {
+  variables: { promotionRef },
+  fetchPolicy: 'cache-and-network',
+});</code></pre><p>This is not an argument against Apollo. It is a reminder that, in this application, server state is strongly tied to context: country, subsidiary, role and the current view. If the cache is not aligned with that context, the UI can show stale data.</p><h3>React Hook Form should own the edited form</h3><p>In <code>promotion-detail.tsx</code>, several worlds meet: Recoil, React Hook Form and Apollo.</p><span class="code-label">promotion-detail.tsx</span><pre><code>const { promotion, isLoading, isSaving, isExternal } =
+  useRecoilValue(promotionRecoilState);
+
+const [modeRecoilState, setModeRecoilState] =
+  useRecoilState(modeState);
+
+const methods = useForm&lt;PromotionForm&gt;({
+  mode: 'onChange',
+  resolver: yupResolver(
+    getPromotionSchema({
+      disabledFeatures,
+      isExternalPromotion: isExternal,
+    })
+  ) as any,
+  defaultValues: prepareForLoad(
+    promotion,
+    isEnabled(featureToggles.DEFAULT_PROMOTION_CLASSIFICATIONS_FOR_TESTS)
+  ),
+});
+
+const [getValidation] = useLazyQuery(VALIDATE_PROMOTION);</code></pre><p>If the user edits a promotion, the form fields should belong to React Hook Form. Global state can hold metadata, but the edited promotion fields should remain in RHF.</p><pre><code>React Hook Form:
+- current form values
+- dirty state
+- touched fields
+- validation errors
+- submit state
+
+Global meta-state:
+- mode: create/edit/restore
+- isCopiedPromotion as a separate flag
+- currentPromotionId
+- isSaving
+- isExternal
+- opened panels</code></pre></section>
+        <section id="jotai"><h2>Why Jotai was the first candidate</h2><p>Jotai was the natural first candidate because it is close to Recoil in how we work with small pieces of state. If today we have a simple atom, the migration can be quite calm.</p><span class="code-label">Recoil</span><pre><code>const navigationRecoilState = atom&lt;{
+  isNavigationCollapsed: boolean;
+}&gt;({
+  key: 'navigation',
+  default: { isNavigationCollapsed: true },
+});</code></pre><span class="code-label">Jotai</span><pre><code>import { atom } from 'jotai';
+
+export const navigationAtom = atom&lt;{
+  isNavigationCollapsed: boolean;
+}&gt;({
+  isNavigationCollapsed: true,
+});</code></pre><div class="tag-row"><span class="tag">small diff</span><span class="tag">lower regression risk</span><span class="tag">similar atom workflow</span><span class="tag">faster Recoil removal</span></div><pre><code>Recoil atom       → Jotai atom
+useRecoilState    → useAtom
+useRecoilValue    → useAtomValue
+useSetRecoilState → useSetAtom</code></pre><p>This is why Jotai solves the short-term problem well: <code>we need to get off deprecated Recoil</code>. It lets us preserve the current style of working with atoms and reduce regression risk.</p><p>But it does not solve everything.</p></section>
+        <section id="command"><h2>Problem: command-in-state</h2><p>One of the most interesting findings was a pattern I would call <code>command-in-state</code>: a state value that does not describe the world, but acts as a command to trigger an effect.</p><span class="code-label">coupon-jobs-recoil-state.ts</span><pre><code>export const couponJobsCheckRecoilState = atom&lt;boolean&gt;({
+  key: 'couponJobCheck',
+  default: true,
+});</code></pre><p>At first glance, this looks innocent. We have a boolean that says whether coupon jobs should be checked. But in practice, this boolean is a trigger.</p><span class="code-label">coupon-manager.tsx</span><pre><code>useEffect(() => {
+  setCouponJobsCheckRecoilStateValue(true);
+}, [setCouponJobsCheckRecoilStateValue]);</code></pre><span class="code-label">coupon-manager.tsx</span><pre><code>onGenerate({
+  quantity,
+  redemptionLimit: activeTab,
+  pattern: couponCodePattern,
+  async: true,
+  onThen: () =>
+    quantity > 1 && setCouponJobsCheckRecoilStateValue(true),
+});</code></pre><p>The coupon generation mutation itself lives in <code>use-coupons.ts</code>:</p><span class="code-label">use-coupons.ts</span><pre><code>const generateCoupons = ({
+  quantity,
+  redemptionLimit,
+  pattern,
+  partyIds,
+  async,
+  onThen,
+}: GenerateCouponsProps) => {
+  generate({
+    // ...
+  }).then(() => {
+    const isAsync = !!(quantity > 1 && async);
+
+    emitSuccess({
+      action: CouponAction.Generate,
+      async: isAsync,
+    });
+
+    if (!isAsync) {
+      refetch();
+    }
+
+    if (onThen) {
+      onThen();
+    }
+  });
+};</code></pre><div class="flow"><div class="flow-step"><span>1</span><p>User clicks <code>Generate coupons</code></p></div><div class="flow-step"><span>2</span><p>Apollo mutation starts coupon generation</p></div><div class="flow-step"><span>3</span><p><code>generateCoupons.then(...)</code> runs the callback</p></div><div class="flow-step"><span>4</span><p><code>onThen</code> sets <code>couponJobsCheck = true</code></p></div><div class="flow-step"><span>5</span><p><code>useEffect</code> in <code>use-jobs-checker</code> sees the trigger</p></div><div class="flow-step"><span>6</span><p>The trigger is reset, the check starts, and polling may continue</p></div></div><div class="callout warning"><strong>This works.</strong> The problem is not that the code must be “bad”. The problem appears when we need to trace who started polling, whether polling is already running, and what happens after two fast clicks</div><h3>Second example: rerenderFilters</h3><p>A similar pattern appears in filters. <code>rerenderFilters</code> is also not really domain state, but a technical command: “force filter UI synchronization”. Historically, this mechanism was related to Excel import through <code>Bulk maintenance</code>, where an external import had to synchronize the form and manually added filter items.</p><span class="code-label">filter-recoil-state.ts</span><pre><code>export const filterRecoilState = atom&lt;{
+  rerenderFilters: boolean;
+}&gt;({
+  key: 'rerender-filters',
+  default: { rerenderFilters: false },
+});</code></pre><span class="code-label">promotion-filter.tsx</span><pre><code>useEffect(() => {
+  if (filterState.rerenderFilters) {
+    setFilterState({ rerenderFilters: false });
+    setCachedFilters(filters);
+  }
+}, [filters]);</code></pre><p>So we have at least two real <code>command-in-state</code> examples: <code>couponJobsCheck</code> and <code>rerenderFilters</code>. Both are good candidates for a later refactor into explicit event flow, but they do not have to be refactored in the same PR as the Recoil → Jotai migration.</p></section>
+        <section id="polling"><h2>What the current polling looks like</h2><p>The current polling lives in <code>use-jobs-checker.ts</code>. Simplified:</p><span class="code-label">use-jobs-checker.ts</span><pre><code>useInterval(
+  () => handleGetJobs(username),
+  couponJobsRecoilStateValue?.length ? interval : null
+);
+
+useEffect(() => {
+  if (couponJobsCheckRecoilStateValue && username && !error) {
+    setCouponJobsCheckRecoilStateValue(false);
+    handleGetJobs(username);
+  }
+}, [
+  couponJobsCheckRecoilStateValue,
+  error,
+  handleGetJobs,
+  setCouponJobsCheckRecoilStateValue,
+  username,
+]);</code></pre><p>Important detail: the trigger does not mean polling “always runs” after the flag is set. The flow has two steps. <code>couponJobsCheck</code> starts the first fetch through <code>handleGetJobs</code>, and <code>useInterval</code> runs only when there are jobs to observe: <code>couponJobsRecoilStateValue?.length ? interval : null</code>.</p><div class="callout success"><strong>More precisely:</strong> the trigger means “kick off the first check”, while the interval is only conditional continuation of polling when running jobs exist</div><p>This hook does several things at once:</p><pre><code>runs QUERY_JOBS through useLazyQuery
+reacts to couponJobsCheckRecoilState
+resets the trigger from true to false
+runs one immediate check
+starts polling through useInterval
+detects finished jobs
+shows notifications
+updates global jobs state</code></pre><p>This is why Redux Toolkit entered the discussion. Not because Redux is better for every kind of state, but because here we are dealing with a process.</p><div class="callout">We have process start, process status, polling, completion conditions, errors, notifications, possible duplication and a need to debug the sequence of events</div><h3>Minimal Recoil → Jotai migration</h3><p>As we can see, <code>use-jobs-checker</code> already has quite a lot of responsibility. Still, the first migration step does not need to solve the entire polling problem immediately. If the goal of phase one is to safely and quickly remove Recoil, we can first move atoms 1:1 to Jotai and preserve current behavior.</p><p>A minimal migration could look like this:</p><pre><code>- import { atom } from 'recoil';
++ import { atom } from 'jotai';
+
+- export const couponJobsCheckRecoilState = atom&lt;boolean&gt;({
+-   key: 'couponJobCheck',
+-   default: true,
+- });
++ export const couponJobsCheckAtom = atom&lt;boolean&gt;(true);</code></pre><pre><code>- const setCouponJobsCheckRecoilStateValue =
+-   useSetRecoilState(couponJobsCheckRecoilState);
++ const setCouponJobsCheck = useSetAtom(couponJobsCheckAtom);
+
+- onThen: () => quantity > 1 && setCouponJobsCheckRecoilStateValue(true),
++ onThen: () => quantity > 1 && setCouponJobsCheck(true),</code></pre><div class="callout warning">This is a good first step if the goal is a safe Recoil migration. But architecturally, the problem remains. We still have a boolean trigger, polling started by an effect, and scattered flow</div></section>
+        <section id="redux"><h2>What this could look like in Redux Toolkit</h2><p>In Redux Toolkit, this process can be described more explicitly. Instead of hidden flow based on a boolean trigger and <code>useEffect</code>, we can have a sequence of actions:</p><pre><code>coupon/generateRequested
+couponJobs/triggerJobsCheck
+couponJobs/startJobsCheck
+couponJobs/setJobs
+couponJobs/clearJobs
+couponJobs/pollingFinished
+couponJobs/pollingFailed</code></pre><div class="timeline"><div class="timeline-row"><div class="timeline-time">15:23:01</div><div class="timeline-action">coupon/generateRequested</div></div><div class="timeline-row"><div class="timeline-time">15:23:01</div><div class="timeline-action">couponJobs/startPolling/pending</div></div><div class="timeline-row"><div class="timeline-time">15:23:04</div><div class="timeline-action">couponJobs/jobsUpdated</div></div><div class="timeline-row"><div class="timeline-time">15:23:07</div><div class="timeline-action">couponJobs/jobsUpdated</div></div><div class="timeline-row"><div class="timeline-time">15:23:07</div><div class="timeline-action">couponJobs/startPolling/fulfilled</div></div></div><p>A minimal slice candidate could look like this:</p><span class="code-label">coupon-jobs-slice.ts</span><pre><code>import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { CouponJob } from '#types/generated-types';
+
+interface CouponJobsState {
+  jobs: CouponJob[] | null;
+  shouldCheck: boolean;
+  lastCheckedAt: number | null;
+}
+
+const initialState: CouponJobsState = {
+  jobs: null,
+  shouldCheck: true,
+  lastCheckedAt: null,
+};
+
+const couponJobsSlice = createSlice({
+  name: 'couponJobs',
+  initialState,
+  reducers: {
+    triggerJobsCheck: state => {
+      state.shouldCheck = true;
+    },
+    startJobsCheck: state => {
+      state.shouldCheck = false;
+      state.lastCheckedAt = Date.now();
+    },
+    setJobs: (state, action: PayloadAction&lt;CouponJob[] | null&gt;) => {
+      state.jobs = action.payload;
+    },
+    clearJobs: state => {
+      state.jobs = null;
+    },
+  },
+});
+
+export const {
+  triggerJobsCheck,
+  startJobsCheck,
+  setJobs,
+  clearJobs,
+} = couponJobsSlice.actions;
+
+export default couponJobsSlice.reducer;</code></pre><p>This still is not the final perfect model. <code>shouldCheck</code> can still smell like a trigger, so the next step could be a full async flow through a thunk or middleware.</p><p>But even this simple slice has one advantage over a boolean atom: every step is named as an action.</p><span class="code-label">target direction</span><pre><code>export const startCouponJobsPolling = createAsyncThunk(
+  'couponJobs/startPolling',
+  async (_, { signal, dispatch }) => {
+    while (!signal.aborted) {
+      const jobs = await fetchJobs();
+
+      dispatch(jobsUpdated(jobs));
+
+      const hasRunningJobs = jobs.some(
+        job => job.status === 'IN_PROGRESS'
+      );
+
+      if (!hasRunningJobs) {
+        break;
+      }
+
+      await sleep(3000);
+    }
+  },
+  {
+    condition: (_, { getState }) => {
+      const state = getState() as RootState;
+
+      return !state.couponJobs.isPolling;
+    },
+  }
+);</code></pre><div class="split"><div class="mini-card"><h3>Before</h3><p>Recoil: harder to trace the full <code>trigger → fetch → update</code> sequence without a dedicated timeline.</p></div><div class="mini-card"><h3>After</h3><p>Redux Toolkit: <code>triggerJobsCheck</code>, <code>startJobsCheck</code>, <code>setJobs</code>, a visible path in Redux DevTools, and simpler reducer tests.</p></div></div></section>
+        <section id="profile"><h2>Profile / subsidiary context: overlapping ownership</h2><p>Profile, roles and subsidiaries are less spectacular than polling, but architecturally they are also important. In the current code, responsibility for user/subsidiary context is split between <code>ProfileProvider</code> and <code>LayoutComponent</code>.</p><p>This is not necessarily a bug. These things often grow naturally: a provider loads profile data, the layout needs it to render the application, and then roles, selected subsidiary, localStorage and dependent queries join the party. The problem starts when multiple places can update similar context and it becomes hard to answer which one is the source of truth.</p><p>In the current code, <code>ProfileProvider</code> handles session bootstrap: it loads <code>getUserData</code>, sets <code>userRecoilState</code>, <code>allowedSubsidiariesRecoilState</code>, <code>currencyRecoilState</code>, <code>availableRolesState</code>, and after selected subsidiary changes it also fetches customer segments. <code>LayoutComponent</code> reacts to subsidiary in the URL during navigation, validates whether that subsidiary is allowed, fetches user data again, and also updates user/subsidiary/currency context.</p><span class="code-label">profile-provider.tsx</span><pre><code>if (isUrlSubsidiaryAllowed && isUrlAndLocalSubsidiaryDifferent) {
+  setLocaleStorageSubsidiary(urlSubsidiary);
+
+  const { data: newData } = await refetch();
+
+  if (newData) {
+    handleUserData(newData as GetUserDataResponse);
+  }
+}</code></pre><span class="code-label">default-layout.tsx</span><pre><code>if (isIncluded) {
+  setLocaleStorageSubsidiary({ ...urlSubsidiary });
+
+  const { data } = await getUserData();
+
+  if (data) {
+    handleUserData(data);
+  }
+}</code></pre><div class="callout"><strong>Migration conclusion:</strong> selected role and allowed subsidiaries can be moved 1:1 to Jotai in phase one. Later, we should review session/meta-state separately and only then decide whether part of this flow belongs in Redux Toolkit as an explicit lifecycle</div><pre><code>profile loaded
+allowed subsidiaries loaded
+default subsidiary selected
+roles derived from subsidiary
+selected role restored from localStorage
+invalid selected role corrected
+dependent queries refetched</code></pre></section>
+        <section id="filters"><h2>Boundary example: rerenderFilters</h2><p>I would keep filters in the article, but not as a random “bug found along the way”. This is more of a boundary example. <code>rerenderFilters</code> shows that not every problem found in Recoil automatically means “move this to Redux”.</p><p>The atom looks innocent:</p><span class="code-label">filter-recoil-state.ts</span><pre><code>type FilterRecoilStateType = {
+  rerenderFilters: boolean;
+};
+
+export const filterRecoilState = atom&lt;FilterRecoilStateType&gt;({
+  key: 'rerender-filters',
+  default: { rerenderFilters: false },
+});</code></pre><p>But when we look deeper, the problem is probably not Recoil itself.</p><span class="code-label">use-filter.ts</span><pre><code>const filter = Filter();
+
+const useFilter = (initialData: ItemFilter[]) => {
+  const [filters, setFilters] = useState&lt;FilterType[]&gt;([]);
+
+  useEffect(() => {
+    filter.loadFromAPI(initialData);
+  }, [initialData]);
+
+  filter.onChange(() => {
+    setFilters(filter.toJSON());
+  });
+
+  return {
+    ...filter,
+    filters,
+  };
+};</code></pre><div class="callout warning"><strong>Technical smell:</strong> <code>filter.onChange(...)</code> is registered in the hook body, outside <code>useEffect</code>. This means the subscription may be attached on renders instead of having an explicit lifecycle with cleanup</div><span class="code-label">filter.ts</span><pre><code>let storeVersion = 0;
+let cachedJSONVersion = -1;
+let cachedJSON: FilterType[] = [];
+
+const toJSON = (): FilterType[] => {
+  if (cachedJSONVersion === storeVersion) {
+    return cachedJSON;
+  }
+
+  // rebuild snapshot...
+};</code></pre><p>In practice, <code>rerenderFilters</code> is part of a wider flow related to Excel import through <code>Bulk maintenance</code>:</p><pre><code>Upload and parse .xls/.xlsx
+validation + grouping products
+generating filters + rules
+writing to RHF through setValue(...)
+triggering rerenderFilters
+synchronizing filter UI</code></pre><span class="code-label">promotion-price-bulk-maintenance.tsx</span><pre><code>setValue(
+  'filters',
+  [...(filters ?? []), ...(data.filters ?? [])],
+  { shouldDirty: true, shouldTouch: true }
+);
+
+setValue(
+  'rules',
+  [...(rules ?? []), ...(data.rules ?? [])],
+  { shouldDirty: true, shouldTouch: true }
+);
+
+setFilterState({ rerenderFilters: true });</code></pre><p>If we simply move <code>rerenderFilters</code> from Recoil to Jotai or Redux, we will still have the same synchronization mechanism through a global flag.</p><div class="callout warning">This area is not the main argument for Redux Toolkit. It is a warning: migrate Recoil → Jotai first, preserve current behavior, and treat filters as a separate ownership refactor</div><p>First we need to clarify ownership between RHF, the <code>Filter()</code> model, Excel import and filter UI. Only then can we decide whether this needs Redux, Jotai, or just a better local data flow.</p></section>
+        <section id="ownership"><h2>The main conclusion: state ownership</h2><p>After this analysis, the most important conclusion was not “Redux is better” or “Jotai is better”. The most important conclusion was: we need to separate responsibilities.</p><div class="ownership-grid"><div class="ownership"><h3><span class="dot blue"></span>Apollo Client</h3><p>Backend-data loading and server-state layer, with careful cache policy.</p><ul><li>promotions</li><li>coupons</li><li>stores/subsidiaries</li><li>roles</li><li>jobs as backend data</li></ul></div><div class="ownership"><h3><span class="dot green"></span>React Hook Form</h3><p>Edited form state.</p><ul><li>edited promotion fields</li><li>validation</li><li>dirty/touched/errors</li><li>current form values</li></ul></div><div class="ownership"><h3><span class="dot"></span>Jotai</h3><p>Simple atom-based shared UI state.</p><ul><li>collapsed navigation</li><li>right sidebar</li><li>small shared UI flags</li><li>simple replacement for part of Recoil atoms</li></ul></div><div class="ownership"><h3><span class="dot orange"></span>Redux Toolkit</h3><p>Application processes / flow / session meta-state.</p><ul><li>coupon jobs polling flow</li><li>sessionStatus</li><li>currentPromotionId</li><li>mode create/edit/restore + separate copy flag</li><li>explicit application processes</li></ul></div><div class="ownership"><h3><span class="dot slate"></span>Local state</h3><p>Component-only UI.</p><ul><li>local dropdown open/closed</li><li>hover</li><li>expanded row</li><li>temporary input state</li></ul></div><div class="ownership"><h3><span class="dot red"></span>URL</h3><p>Shareable/search state.</p><ul><li>search params</li><li>shareable filters</li><li>pagination visible in the address</li><li>selected tab, if it should survive refresh</li></ul></div></div></section>
+        <section id="plan"><h2>Our hybrid compromise</h2><p>In the end, we did not choose “Jotai instead of Redux” or “put everything into Redux”. A hybrid compromise made more sense:</p><pre><code>Jotai = lightweight atom layer
+Redux Toolkit = explicit process/flow layer</code></pre><p>We do not assume the path “Recoil → Jotai → Redux for everything”. A more realistic split is: Jotai stays as a lightweight atom layer for simple shared/UI state, while Redux Toolkit is added only where state starts becoming a process.</p><h3 id="jotai-redux">Why not jotai-redux?</h3>
+<p>There is also an obvious question: if we plan to use both Jotai and Redux Toolkit, should we connect them with <code>jotai-redux</code>?</p>
+<p>For this project, probably not. <code>jotai-redux</code> is useful when you want to expose a Redux store through a Jotai atom. Its <code>atomWithStore</code> creates an atom from a Redux store and supports two-way binding: the state can be changed from both the Redux side and the Jotai side.</p>
+<p>That is exactly why we do not want to introduce it by default. The main point of this migration is not just to replace one state library with another. The main point is to make ownership clearer.</p>
+<pre><code>Jotai
+- owns lightweight atom state
+- navigation
+- right sidebar
+- small shared UI flags
+
+Redux Toolkit
+- owns explicit process state
+- coupon jobs / polling
+- async lifecycle
+- selected session/meta-state, if needed</code></pre>
+<p>If we connect both layers automatically, we risk hiding the boundary again. Components could update Redux through Jotai atoms, or read Redux state as if it were local atom state. That may be useful as a temporary migration bridge, but it is not the architecture we want as the default.</p>
+<div class="callout warning"><strong>Decision:</strong> we do not introduce <code>jotai-redux</code> at this stage. Jotai and Redux Toolkit should coexist, but with explicit ownership boundaries rather than automatic two-way synchronization</div><p>The first step is <code>Recoil → Jotai</code>. The goal is to safely remove the deprecated dependency. We do not try to fix the whole architecture in the same PR.</p><p>The second step, without the Recoil pressure, is selected processes in Redux Toolkit. Most likely, coupon jobs / polling comes first, because the benefit is concrete. Later we can look at session/meta-state, selectedRole, selectedSubsidiary, currentPromotionId, create/edit/restore modes, the copy flag, and other places where the application has explicit flow rather than just a simple value.</p><h3>Anti-pattern candidates</h3><table class="data-table"><thead><tr><th>Candidate</th><th>Smell</th><th>Plan</th></tr></thead><tbody><tr><td><code>couponJobsCheck</code></td><td>Boolean used as a command to start a check/polling.</td><td>Migrate 1:1 now, later replace with explicit Redux Toolkit flow.</td></tr><tr><td><code>rerenderFilters</code></td><td>Global flag forcing filter UI synchronization.</td><td>Migrate 1:1 now, later refactor filter ownership separately.</td></tr><tr><td><code>Filter()</code> singleton</td><td>Module-level model + callback synchronization + cached snapshots.</td><td>Do not solve during Recoil migration. Plan a separate track.</td></tr></tbody></table><h3>Migration plan (realistic, code-driven)</h3><div class="callout success"><strong>Definition of Done for phase one:</strong> no imports from <code>recoil</code>, green tests, no intentional behavior changes</div><pre><code>Phase 1: Recoil -> Jotai (replacement only)
+- move atoms 1:1 without changing business flow
+- do not immediately refactor couponJobsCheck and rerenderFilters
+- goal: remove deprecated dependency with minimal regression risk
+
+Phase 2: coupon jobs flow -> Redux Toolkit
+- replace the boolean trigger (couponJobsCheck) with explicit actions
+- introduce process status: idle / polling / error / completed
+- add scenario tests and DevTools timeline debugging
+
+Phase 3: session/meta-state review
+- review selectedRole, allowedSubsidiaries, mode, isSaving
+- keep simple shared UI state in Jotai
+- move only lifecycle-heavy processes to RTK
+
+Phase 4: filters refactor (separate track)
+- clarify ownership: RHF vs Filter() model vs UI sync
+- remove technical trigger flags where deterministic data flow is possible</code></pre><h3>Risks</h3><div class="split"><div class="mini-card"><h3>Hybrid state has a cost</h3><p>For some time, Apollo, React Hook Form, Jotai and Redux Toolkit may exist side by side. This requires clear ownership boundaries.</p></div><div class="mini-card"><h3>Migration does not fix flow</h3><p>Recoil → Jotai may move anti-patterns 1:1. Places like <code>couponJobsCheck</code> and <code>rerenderFilters</code> should be marked as technical debt.</p></div></div><pre><code>// TODO: temporary migration from Recoil.
+// This is command-in-state and should be replaced by explicit flow/refactor.</code></pre><div class="quote">First, technological safety. Then architecture improvements where they are actually worth it</div><h2>Summary</h2><p>The first intuition was simple: Recoil is deprecated, so let’s move to Jotai.</p><p>Then came the second thought: if we are already touching state management, maybe we should also compare Redux Toolkit and use this situation to improve the application flow.</p><p>The final conclusion is more nuanced. Jotai solves the short-term problem: it allows us to safely replace Recoil because it is close to the current atom-based approach.</p><p>Redux Toolkit solves a different, longer-term problem: it helps organize processes, async flow, polling, session/meta-state, tests and debugging in places where plain atoms start to be insufficient.</p><pre><code>Jotai = lightweight atom layer
+Redux Toolkit = explicit process/flow layer</code></pre><p>The most important conclusion is not “Redux Toolkit is better than Jotai”. It is also not “Jotai is enough and Redux is unnecessary”.</p><p>The most important conclusion is: first separate the types of state and their ownership. Only then does choosing a library start to make sense.</p></section>
+      </article>
+    </div>
+    <footer class="footer-note"><h2>What next?</h2><p>This article is the first part of the story, not the final verdict. The plan is to describe the next steps as they happen: how the migration went, what broke, which assumptions were right, and whether the hybrid approach was actually worth the extra complexity.</p></footer>
+  </main>
+</body>
+</html>
