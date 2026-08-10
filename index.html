@@ -7,9 +7,10 @@
   <meta name="description" content="A practical case study about replacing deprecated Recoil with Jotai and selectively introducing Redux Toolkit for explicit application flows." />
   <title>Recoil is deprecated. Should we migrate to Jotai, Redux Toolkit, or use both?</title>
   <link rel="icon" type="image/x-icon" href="./images/favicon.ico" />
-    <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./style.css?v=1.0" />
 
   <!-- jotai-redux docs: atomWithStore creates an atom from a Redux store and is two-way binding. -->
+  <link rel="next" href="./part2/" />
 </head>
 <body>
   <main class="page">
@@ -484,7 +485,7 @@ Phase 4: filters refactor (separate track)
 Redux Toolkit = explicit process/flow layer</code></pre><p>The most important conclusion is not “Redux Toolkit is better than Jotai”. It is also not “Jotai is enough and Redux is unnecessary”.</p><p>The most important conclusion is: first separate the types of state and their ownership. Only then does choosing a library start to make sense.</p></section>
       </article>
     </div>
-    <footer class="footer-note"><h2>What next?</h2><p>This article is the first part of the story, not the final verdict. The plan is to describe the next steps as they happen: how the migration went, what broke, which assumptions were right, and whether the hybrid approach was actually worth the extra complexity.</p></footer>
+    <footer class="footer-note"><h2>What next?</h2><p>This article is the first part of the story, not the final verdict. The plan is to describe the next steps as they happen: how the migration went, what broke, which assumptions were right, and whether the hybrid approach was actually worth the extra complexity.</p><p><a class="footer-link" href="./part2/">Continue with Part 2: how phase one actually went →</a></p></footer>
   </main>
 </body>
 </html>

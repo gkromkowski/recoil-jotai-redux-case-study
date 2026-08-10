@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="author" content="Grzegorz Kromkowski" />
+  <meta name="description" content="Part 2 of the Recoil migration case study: how phase one replaced Recoil with Jotai everywhere first, without changing observable behavior." />
+  <title>Recoil → Jotai: How Phase One Actually Went — Part 2</title>
+  <link rel="icon" type="image/x-icon" href="../images/favicon.ico" />
+  <link rel="stylesheet" href="../style.css?v=1.0" />
+  <link rel="prev" href="../" />
+</head>
+<body>
+<main class="page">
+<header class="hero">
+<div class="hero-inner">
+<div class="eyebrow"><img alt="" class="eyebrow-icon" src="../images/mascot-icon.png"/> Part 2 · State Management Migration</div>
+<h1>Recoil → Jotai:<br/>How Phase One Actually Went</h1>
+<p class="lead">
+          We said phase one would be a safe, mechanical replacement: remove Recoil, introduce Jotai everywhere, and avoid behavior changes. That is mostly what happened — but the migration also taught us a few things about reset semantics, composite atoms and tests.
+        </p>
+<div class="meta-row">
+<span class="pill">React</span><span class="pill">Apollo Client</span><span class="pill">React Hook Form</span><span class="pill">Recoil → Jotai</span><span class="pill">Redux Toolkit</span></div>
+
+</div>
+<div class="stats">
+<div class="stat"><strong>115+</strong><span>source files touched</span></div>
+<div class="stat"><strong>12</strong><span>atoms moved</span></div>
+<div class="stat"><strong>1</strong><span>selector replaced</span></div>
+<div class="stat"><strong>0</strong><span>Recoil imports left</span></div>
+</div>
+<div aria-label="Team logo" class="hero-logo-panel"><img alt="Team mascot logo" class="team-logo" src="../images/team-mascot-logo.png"/></div>
+</header>
+<div class="layout">
+<aside aria-label="Table of contents" class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#tldr">TL;DR</a></li>
+<li><a href="#goal">What phase one was supposed to do</a></li>
+<li><a href="#inventory">The inventory, not the dump</a></li>
+<li><a href="#mechanical">Mechanical migration examples</a></li>
+<li><a href="#atomwithreset">Why atomWithReset</a></li>
+<li><a href="#composite">The composite atom</a></li>
+<li><a href="#provider">Provider and entry point</a></li>
+<li><a href="#hooks">Hook migration</a></li>
+<li><a href="#tests">Testing setup changed, but stayed familiar</a></li>
+<li><a href="#mocking">Mocking atom setters</a></li>
+<li><a href="#debt">What we intentionally kept</a></li>
+<li><a href="#verdict">Verdict</a></li>
+<li><a href="#next">What comes next</a></li>
+</ol>
+</aside>
+<article>
+<div class="article-card">
+<section id="tldr">
+    <h2>TL;DR — what changed in phase one?</h2>
+    <p class="intro">
+        Part 2 of the article series covers Phase 1 of the migration: replacing Recoil with Jotai everywhere. The goal was intentionally narrow: remove Recoil, keep behavior unchanged, and postpone deeper architecture work.
+    </p>
+
+    <ul class="tldr-list">
+        <li>
+            <strong>Phase one was intentionally boring.</strong>
+            Recoil disappeared, Jotai became the atom layer, and application behavior stayed the same
+        </li>
+        <li>
+            <strong>Simple atoms moved almost 1:1.</strong>
+            Most changes were import paths, hook names and atom references
+        </li>
+        <li>
+            <strong>Reset semantics mattered.</strong>
+            We used <code>atomWithReset</code> because it mapped better to the existing cleanup behavior than plain <code>atom</code>
+        </li>
+        <li>
+            <strong>The promotion selector became a composite atom.</strong>
+            Jotai’s <code>atom(get, set)</code> let us keep the same component-facing surface
+        </li>
+        <li>
+            <strong>Some debt intentionally stayed.</strong>
+            <code>couponJobsCheck</code> and <code>rerenderFilters</code> were moved 1:1 and left for later architecture work
+        </li>
+        <li>
+            <strong>Tests changed, but not magically.</strong>
+            The shared setup moved from <code>RecoilRoot.initializeState</code> to a similar but slightly more explicit <code>createStore()</code> setup
+        </li>
+    </ul>
+
+    <div class="quote">
+        The short answer: phase one removed Recoil safely, introduced Jotai everywhere, and prepared the ground for the actual architecture work
+    </div>
+</section>
+<section id="goal">
+    <h2>What phase one was supposed to do</h2>
+    <p class="intro">
+        In <a href="../" target="_self">Part 1</a> we described why Recoil had to go, why Jotai was the first candidate, and why Redux Toolkit should wait until we tackle explicit application flows. Phase one had one narrow goal: remove the deprecated dependency safely, without redesigning the application.
+    </p>
+    <div class="callout success">
+        <strong>Definition of Done — achieved:</strong>
+        <ul>
+            <li>zero imports from <code>recoil</code> anywhere in the codebase</li>
+            <li>all unit tests green</li>
+            <li>no intentional behavior changes</li>
+            <li>no application-flow redesign — that comes later</li>
+        </ul>
+    </div>
+    <p>
+        The migration touched every file that previously imported from <code>recoil</code>. In practice, that meant more than 115 source files, 12 atom files, one selector, the test infrastructure and the application entry point. The business logic was intentionally kept unchanged.
+    </p>
+    <div class="quote">
+        The goal was not to make the architecture perfect. The goal was to remove Recoil without changing how the application behaves
+    </div>
+</section>
+<section id="inventory">
+<h2>The inventory, but not as a file dump</h2>
+<p>
+    Before writing Jotai code, we still had to map the current Recoil surface area. Internally, that meant a full inventory: every atom, every selector, every import, and every test wrapper. For an article, however, the file-by-file list is less interesting than the kinds of cases we found.
+  </p>
+<p>
+    The migration was not one problem repeated twelve times. It was several different shapes of state that happened to share the same Recoil dependency.
+  </p>
+<table class="data-table">
+<thead><tr><th>Case</th><th>Examples</th><th>Why it mattered</th></tr></thead>
+<tbody>
+<tr><td>Small UI atoms</td><td><code>navigation</code>, <code>rightSidebar</code></td><td>Easy 1:1 migration. These were the calm, mechanical cases.</td></tr>
+<tr><td>Session/meta-state</td><td><code>user</code>, <code>selectedRole</code>, <code>allowedSubsidiaries</code>, <code>currency</code></td><td>Still migrated to Jotai in phase one, but worth reviewing later because they influence permissions, queries and visible data.</td></tr>
+<tr><td>Command-in-state</td><td><code>couponJobsCheck</code>, <code>rerenderFilters</code></td><td>Moved 1:1 for safety, explicitly marked as architectural debt.</td></tr>
+<tr><td>Composite state surface</td><td><code>promotionRecoilState</code></td><td>The only Recoil selector had to become a Jotai read/write atom without changing the component-facing shape.</td></tr>
+<tr><td>Tests and wrappers</td><td><code>RecoilRoot.initializeState</code>, <code>createStore()</code>, atom setter mocks</td><td>The shared wrapper stayed structurally similar, but Jotai made state initialization a little more explicit.</td></tr>
+</tbody>
+</table>
+<p>
+    So yes, we had the full inventory. But the useful story is not “here are all files”. The useful story is: which migration pattern did each state shape require?
+  </p>
+</section>
+<section id="mechanical">
+<h2>The mechanical migration</h2>
+<p>The snippets below are examples, not a full list of every changed file. Most atoms followed the same mechanical pattern: Recoil's key disappeared, the default value became the Jotai initial value, and the atom moved to src/jotai/.</p>
+<p>
+    I kept <code>couponJobs</code> in the examples on purpose. It is one of the atoms we will revisit in the next part when we move the polling flow to Redux Toolkit. In phase one, however, it was intentionally migrated 1:1.
+  </p>
+<h3>Simple UI atom: navigation</h3>
+<div class="diff-grid">
+<div class="diff-side diff-before">
+<div class="diff-label">Before — navigation-recoil-state.ts</div>
+<pre><code>import { atom } from 'recoil';
+
+type NavigationRecoilStateType = {
+    isNavigationCollapsed: boolean;
+};
+
+export const navigationRecoilState =
+  atom&lt;NavigationRecoilStateType>({
+    key: 'navigation',
+    default: { isNavigationCollapsed: true },
+  });</code></pre>
+</div>
+<div class="diff-side diff-after">
+<div class="diff-label">After — navigation-atom.ts</div>
+<pre><code>import { atomWithReset } from 'jotai/utils';
+
+export type NavigationAtomType = {
+    isNavigationCollapsed: boolean;
+};
+
+export const navigationAtom =
+  atomWithReset&lt;NavigationAtomType>({
+    isNavigationCollapsed: true,
+  });</code></pre>
+</div>
+</div>
+<h3>Important temporary case: coupon jobs</h3>
+<div class="diff-grid">
+<div class="diff-side diff-before">
+<div class="diff-label">Before — coupon-jobs-recoil-state.ts</div>
+<pre><code>import { atom } from 'recoil';
+import { CouponJob } from '#types/generated-types';
+
+export const couponJobsRecoilState =
+  atom&lt;CouponJob[] | undefined>({
+    key: 'couponJobs',
+    default: undefined,
+  });
+
+// trigger check: true → run check, false → skip
+export const couponJobsCheckRecoilState =
+  atom&lt;boolean>({
+    key: 'couponJobCheck',
+    default: true,
+  });</code></pre>
+</div>
+<div class="diff-side diff-after">
+<div class="diff-label">After — coupon-jobs-atom.ts</div>
+<pre><code>import { atomWithReset } from 'jotai/utils';
+import { CouponJob } from '#types/generated-types';
+
+export const couponJobsAtom =
+  atomWithReset&lt;CouponJob[] | undefined>(undefined);
+
+// trigger check: true → run check, false → skip
+export const couponJobsCheckAtom =
+  atomWithReset&lt;boolean>(true);</code></pre>
+</div>
+</div>
+<div class="callout warning">
+<strong>Notice what did not change:</strong>
+<code>couponJobsCheck</code> is still a boolean trigger. That is intentional. This PR was a replacement, not the coupon polling refactor
+  </div>
+</section>
+<section id="atomwithreset">
+<h2>Why atomWithReset, not atom</h2>
+<p>
+<a href="../" target="_self">Part 1</a> showed the basic migration with plain <code>atom</code> from <code>jotai</code>. In practice, the migrated atoms use <code>atomWithReset</code> from <code>jotai/utils</code>. This was deliberate.
+            </p>
+<p>
+              The reason is reset semantics. In a promotion-heavy application, navigating away from a promotion must clean up a lot of state: loaded promotion data, loading flags, edit mode, copy flag, revision list and coupon state. With a plain atom, the call site needs to know the initial value.
+            </p>
+<span class="code-label">plain atom — reset requires knowing the default</span>
+<pre class=""><code>// with plain atom — requires knowing the initial value at the call site
+const setPromotion = useSetAtom(promotionAtom);
+setPromotion(undefined); // you need to know this is the default</code></pre>
+<p>
+              With <code>atomWithReset</code>, the initial value stays sealed inside the atom definition. The call site only sends <code>RESET</code>.
+            </p>
+<span class="code-label">atomWithReset + RESET</span>
+<pre class=""><code>import { useSetAtom } from 'jotai';
+import { RESET } from 'jotai/utils';
+import { promotionAtom } from '#jotai/promotion-state-atom';
+
+const resetPromotion = useSetAtom(promotionAtom);
+
+// On navigation away — reset to the initial value defined in the atom
+resetPromotion(RESET);</code></pre>
+<p>
+              This becomes even more useful with the composite promotion state, because resetting the composite atom can reset all individual atoms at once.
+            </p>
+<span class="code-label">resetting the composite promotion atom</span>
+<pre class=""><code>const setPromotionState = useSetAtom(promotionStateAtom);
+
+// Resets all 8 individual atoms to their defaults simultaneously
+setPromotionState(RESET);</code></pre>
+<div class="callout success">
+<strong>Lesson learned:</strong>
+              for a migration from Recoil, <code>atomWithReset</code> often maps better to existing reset behavior than a plain Jotai <code>atom</code>
+</div>
+</section>
+<section id="composite">
+<h2>The composite atom pattern</h2>
+<p>
+    The most interesting case was promotion state. In Recoil, it was not just one large atom. It was a set of individual atoms plus a <code>selector</code> that combined them into a single readable and writable surface.
+  </p>
+<span class="code-label">Before — selector/promotion-recoil-state.ts (simplified)</span>
+<pre><code>import { atom, DefaultValue, selector } from 'recoil';
+
+// Individual atoms
+export const promotionState = atom&lt;Promotion | undefined>({ key: 'promotion', default: undefined });
+export const isLoadingState = atom&lt;boolean>({ key: 'isLoading', default: true });
+export const isSavingState = atom&lt;boolean>({ key: 'isSaving', default: true });
+export const modeState = atom&lt;Mode>({ key: 'mode', default: Mode.Create });
+// ... 4 more
+
+// Composite selector providing a single read/write surface
+export const promotionRecoilState = selector&lt;PromotionRecoilStateType>({
+    key: 'promotionRecoilState',
+    get: ({ get }) => ({
+        promotion: get(promotionState),
+        isLoading: get(isLoadingState),
+        isSaving: get(isSavingState),
+        mode: get(modeState),
+        // ...
+    }),
+    set: ({ set }, value) => {
+        if (value instanceof DefaultValue) {
+            set(promotionState, value);
+            set(isLoadingState, value);
+            // ...
+            return;
+        }
+        set(promotionState, value.promotion);
+        set(isLoadingState, value.isLoading);
+        // ...
+    },
+});</code></pre>
+<p>
+    The Jotai version kept the same idea structurally: individual resettable atoms plus a composite <code>atom(get, set)</code>. The read side builds the object from individual atoms. The write side either resets everything, applies a function update, or writes a full object back into the individual atoms.
+  </p>
+<span class="code-label">After — jotai/promotion-state-atom.ts (simplified)</span>
+<pre><code>import { atom } from 'jotai';
+import { atomWithReset, RESET } from 'jotai/utils';
+
+// Individual atoms — each resettable independently
+export const promotionAtom = atomWithReset&lt;Promotion | undefined>(undefined);
+export const isLoadingAtom = atomWithReset&lt;boolean>(true);
+export const isSavingAtom = atomWithReset&lt;boolean>(true);
+export const modeAtom = atomWithReset&lt;Mode>(Mode.Create);
+// ... 4 more
+
+type PromotionStateUpdate =
+    | PromotionStateType
+    | typeof RESET
+    | ((prev: PromotionStateType) => PromotionStateType);
+
+// Composite atom — same component-facing surface as the old selector
+export const promotionStateAtom = atom(
+    (get): PromotionStateType => ({
+        promotion: get(promotionAtom),
+        isLoading: get(isLoadingAtom),
+        isSaving: get(isSavingAtom),
+        mode: get(modeAtom),
+        // ...
+    }),
+    (get, set, value: PromotionStateUpdate): void => {
+        if (value === RESET) {
+            set(promotionAtom, RESET);
+            set(isLoadingAtom, RESET);
+            // ...
+            return;
+        }
+
+        const prev = get(promotionStateAtom);
+        const next = typeof value === 'function' ? value(prev) : value;
+
+        set(promotionAtom, next.promotion);
+        set(isLoadingAtom, next.isLoading);
+        // ...
+    }
+);</code></pre>
+<p>
+    The important part is not that the backend contract or GraphQL API changed — they did not need to. This was a frontend state surface migration: components could still work with one promotion state object, while the implementation underneath moved from a Recoil selector to a Jotai composite atom.
+  </p>
+<span class="code-label">Partial update through the composite atom</span>
+<pre><code>const setPromotionState = useSetAtom(promotionStateAtom);
+
+// Partial update — only change isSaving, keep everything else
+setPromotionState(prev => ({ ...prev, isSaving: false }));</code></pre>
+<div class="quote">
+    Jotai did not force us to flatten the promotion state into one giant atom. We could keep the old “small atoms + composite interface” pattern
+  </div>
+</section>
+<section id="provider">
+<h2>Provider and entry point</h2>
+<p>
+    The application entry point was one of the smallest production changes. The relevant state-management change was simply replacing <code>RecoilRoot</code> with Jotai’s <code>Provider</code>.
+  </p>
+<div class="diff-grid">
+<div class="diff-side diff-before">
+<div class="diff-label">Before — main.tsx (simplified)</div>
+<pre><code>import ReactDOM from 'react-dom/client';
+import { RecoilRoot } from 'recoil';
+
+ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+).render(
+  &lt;ApolloProvider client={client}>
+    &lt;RecoilRoot>
+      &lt;I18nextProvider i18n={i18n}>
+        &lt;ProfileProvider>
+          &lt;App />
+        &lt;/ProfileProvider>
+      &lt;/I18nextProvider>
+    &lt;/RecoilRoot>
+  &lt;/ApolloProvider>
+);</code></pre>
+</div>
+<div class="diff-side diff-after">
+<div class="diff-label">After — main.tsx (simplified)</div>
+<pre><code>import ReactDOM from 'react-dom/client';
+import { Provider as JotaiProvider } from 'jotai';
+
+ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+).render(
+  &lt;ApolloProvider client={client}>
+    &lt;JotaiProvider>
+      &lt;I18nextProvider i18n={i18n}>
+        &lt;ProfileProvider>
+          &lt;App />
+        &lt;/ProfileProvider>
+      &lt;/I18nextProvider>
+    &lt;/JotaiProvider>
+  &lt;/ApolloProvider>
+);</code></pre>
+</div>
+</div>
+<p>
+    This is also why the migration was a good fit for phase one. The provider boundary was already clean. We did not need to thread new props through the application.
+  </p>
+</section>
+<section id="hooks">
+<h2>Hook migration</h2>
+<p>
+              Every component that consumed Recoil state needed three updates: import path, hook name and atom reference. The return shapes are the same, so most component bodies did not change.
+            </p>
+<table class="data-table">
+<thead><tr><th>Recoil hook</th><th>Jotai hook</th><th>Return shape</th></tr></thead>
+<tbody>
+<tr><td><code>useRecoilState(atom)</code></td><td><code>useAtom(atom)</code></td><td><code>[value, setter]</code></td></tr>
+<tr><td><code>useRecoilValue(atom)</code></td><td><code>useAtomValue(atom)</code></td><td><code>value</code></td></tr>
+<tr><td><code>useSetRecoilState(atom)</code></td><td><code>useSetAtom(atom)</code></td><td><code>setter</code></td></tr>
+</tbody>
+</table>
+<h3>A simple value read</h3>
+<div class="diff-grid">
+<div class="diff-side diff-before">
+<div class="diff-label">Before — App.tsx</div>
+<pre><code>import { useRecoilValue } from 'recoil';
+import { allowedSubsidiariesRecoilState }
+  from '#recoil/atoms/allowed-subsidiaries-recoil-state';
+
+const App = () => {
+  const allowedSubsidiaries =
+    useRecoilValue(allowedSubsidiariesRecoilState);
+
+  // ...
+};</code></pre>
+</div>
+<div class="diff-side diff-after">
+<div class="diff-label">After — App.tsx</div>
+<pre><code>import { useAtomValue } from 'jotai';
+import { allowedSubsidiariesAtom }
+  from '#jotai/allowed-subsidiaries-atom';
+
+const App = () => {
+  const allowedSubsidiaries =
+    useAtomValue(allowedSubsidiariesAtom);
+
+  // ...
+};</code></pre>
+</div>
+</div>
+<h3>A real hook with all variants</h3>
+<p>
+<code>use-jobs-checker.ts</code> is a good example because it reads user state and uses both jobs atoms. The polling logic stayed the same. Only imports and hook names changed.
+            </p>
+<div class="diff-grid">
+<div class="diff-side diff-before">
+<div class="diff-label">Before — use-jobs-checker.ts</div>
+<pre><code>import { useRecoilState, useRecoilValue }
+  from 'recoil';
+import {
+  couponJobsCheckRecoilState,
+  couponJobsRecoilState,
+} from '#recoil/atoms/coupon-jobs-recoil-state';
+import { userRecoilState }
+  from '#recoil/atoms/user-recoil-state';
+
+const useJobsChecker = (interval = DEFAULT_INTERVAL) => {
+  const [couponJobsRecoilStateValue,
+         setCouponJobsRecoilStateValue] =
+    useRecoilState(couponJobsRecoilState);
+
+  const [couponJobsCheckRecoilStateValue,
+         setCouponJobsCheckRecoilStateValue] =
+    useRecoilState(couponJobsCheckRecoilState);
+
+  const { username } =
+    useRecoilValue(userRecoilState);
+
+  // ... same logic below
+};</code></pre>
+</div>
+<div class="diff-side diff-after">
+<div class="diff-label">After — use-jobs-checker.ts</div>
+<pre><code>import { useAtom, useAtomValue } from 'jotai';
+import {
+  couponJobsCheckAtom,
+  couponJobsAtom,
+} from '#jotai/coupon-jobs-atom';
+import { userAtom }
+  from '#jotai/user-atom';
+
+const useJobsChecker = (interval = DEFAULT_INTERVAL) => {
+  const [couponJobsAtomValue,
+         setCouponJobsAtomValue] =
+    useAtom(couponJobsAtom);
+
+  const [couponJobsCheckAtomValue,
+         setCouponJobsCheckAtomValue] =
+    useAtom(couponJobsCheckAtom);
+
+  const { username } =
+    useAtomValue(userAtom);
+
+  // ... same logic below
+};</code></pre>
+</div>
+</div>
+<div class="callout">
+<strong>What this tells us:</strong>
+              for simple atom consumption, the Recoil → Jotai migration really is mostly mechanical
+            </div>
+</section>
+<section id="tests">
+        <h2>Testing setup changed, but not as dramatically as production code</h2>
+
+        <p>
+            The production changes were mostly mechanical. The testing setup changed too, but it would be misleading to say that tests became automatically simpler. The shared wrapper stayed structurally similar: we still have a test provider, a helper called <code>getInitializeState</code>, mock state objects, and atom values initialized before rendering.
+        </p>
+
+        <p>
+            The real difference is where and how that initialization happens. With Recoil, state was initialized inside <code>RecoilRoot.initializeState</code> through a snapshot callback. With Jotai, we create a store directly with <code>createStore()</code>, write values into it with <code>store.set(...)</code>, and then pass that store to <code>JotaiProvider</code>.
+        </p>
+
+        <div class="callout">
+            <strong>Honest takeaway:</strong>
+            the Jotai setup is not dramatically shorter. It is slightly more explicit, because the test store is created and prepared as a normal object before rendering
+        </div>
+
+        <h3>Same shape, different initialization point</h3>
+
+        <pre><code>Recoil:
+RecoilRoot
+  initializeState(snapshot => getInitializeState({ set: snapshot.set }))
+
+Jotai:
+const store = createStore()
+getInitializeState({ store })
+JotaiProvider store={store}</code></pre>
+
+        <h3>How Recoil initialized state in tests</h3>
+
+        <p>
+            With Recoil, the test wrapper used <code>RecoilRoot</code> and its <code>initializeState</code> prop. That callback receives a snapshot, and test setup writes atom values through <code>snapshot.set</code>.
+        </p>
+
+        <span class="code-label">Before — mock-wrapper.tsx</span>
+        <pre><code>import { RecoilRoot } from 'recoil';
+import { CouponRecoilStateMock, getInitializeState, PromotionRecoilStateMock }
+  from './mock-recoil';
+
+export const MockWrapper = ({
+    children,
+    role = ROLES.ProductRoot,
+    rightSidebarState,
+    promotionState,
+    couponState,
+}: MockWrapperProps): ReactNode => (
+    &lt;RecoilRoot
+        initializeState={(snapshot) =>
+            getInitializeState({
+                set: snapshot.set,
+                role,
+                rightSidebarState,
+                promotionState,
+                couponState,
+            })
+        }
+    >
+        &lt;MockedProvider mocks={mocks || defaultMocks(role)} addTypename={false}>
+            &lt;MemoryRouter>
+                &lt;ProfileProvider>{children}&lt;/ProfileProvider>
+            &lt;/MemoryRouter>
+        &lt;/MockedProvider>
+    &lt;/RecoilRoot>
+);</code></pre>
+
+        <span class="code-label">Before — mock-recoil.ts</span>
+        <pre><code>import { SetRecoilState } from 'recoil';
+
+interface GetInitializeStateProps {
+    set: SetRecoilState;  // Recoil's own type for the snapshot setter
+    role?: Role;
+    // ...
+}
+
+export const getInitializeState = ({ set, role, promotionState, ... }) => {
+    set(allowedSubsidiariesRecoilState, { allowed: [], selected: ... });
+    set(selectedRoleState, { claims: ..., role, mappedName: role });
+    set(promotionRecoilState, { promotion: ..., isLoading: false, ... });
+    // ...
+};</code></pre>
+
+        <h3>How Jotai initializes state in tests</h3>
+
+        <p>
+            With Jotai, the wrapper creates a dedicated store with <code>createStore()</code>, initializes it directly, and passes it into <code>JotaiProvider</code>. The helper still looks familiar, but instead of receiving Recoil’s snapshot setter, it receives a Jotai store.
+        </p>
+
+        <span class="code-label">After — mock-wrapper.tsx</span>
+        <pre><code>import { Provider as JotaiProvider, createStore } from 'jotai';
+import { CouponStateMock, getInitializeState, PromotionStateMock }
+  from './mock-jotai';
+
+export const MockWrapper = ({
+    children,
+    role = Role.ProductRoot,
+    rightSidebarState,
+    promotionState,
+    couponState,
+}: MockWrapperProps): ReactNode => {
+    const store = createStore();
+
+    getInitializeState({
+        store,
+        role,
+        rightSidebarState,
+        promotionState,
+        couponState,
+    });
+
+    return (
+        &lt;JotaiProvider store={store}>
+            &lt;MockedProvider mocks={mocks || defaultMocks(role)} addTypename={false}>
+                &lt;MemoryRouter>
+                    &lt;ProfileProvider>{children}&lt;/ProfileProvider>
+                &lt;/MemoryRouter>
+            &lt;/MockedProvider>
+        &lt;/JotaiProvider>
+    );
+};</code></pre>
+
+        <span class="code-label">After — mock-jotai.ts</span>
+        <pre><code>import { createStore } from 'jotai';
+
+type JotaiStore = ReturnType&lt;typeof createStore>;
+
+interface GetInitializeStateProps {
+    store: JotaiStore;
+    role?: Role;
+    // ...
+}
+
+export const getInitializeState = ({ store, role, promotionState, ... }) => {
+    store.set(allowedSubsidiariesAtom, { allowed: [], selected: ... });
+    store.set(selectedRoleAtom, { claims: ..., role, mappedName: role });
+    store.set(promotionStateAtom, { promotion: ..., isLoading: false, ... });
+    // ...
+};</code></pre>
+
+        <div class="callout success">
+            <strong>Actual improvement:</strong>
+            Jotai’s <code>createStore()</code> lets the test create and initialize state before rendering. The wrapper is still similar, but the setup is easier to read as a normal store preparation step
+        </div>
+
+        <h3>Simple wrapper tests were mostly a rename</h3>
+
+        <p>
+            Some individual tests did not become simpler. They were mostly mechanical replacements: <code>RecoilRoot</code> became <code>JotaiProvider</code>, and the assertion stayed the same.
+        </p>
+
+        <div class="diff-grid">
+            <div class="diff-side diff-before">
+                <div class="diff-label">Before — StickyBarSkeleton test</div>
+                <pre><code>import { render } from '@testing-library/react';
+import { RecoilRoot } from 'recoil';
+import { describe, it, expect } from 'vitest';
+import StickyBarSkeleton from './sticky-bar-skeleton';
+
+describe('StickyBarSkeleton', () => {
+    it('should render correctly', () => {
+        const { container } = render(
+            &lt;RecoilRoot>
+                &lt;StickyBarSkeleton />
+            &lt;/RecoilRoot>
+        );
+
+        const skeletonDiv =
+            container.querySelector('div[class*="skeleton"]');
+
+        expect(skeletonDiv).toBeTruthy();
+    });
+});</code></pre>
+            </div>
+
+            <div class="diff-side diff-after">
+                <div class="diff-label">After — StickyBarSkeleton test</div>
+                <pre><code>import { render } from '@testing-library/react';
+import { Provider as JotaiProvider } from 'jotai';
+import { describe, it, expect } from 'vitest';
+import StickyBarSkeleton from './sticky-bar-skeleton';
+
+describe('StickyBarSkeleton', () => {
+    it('should render correctly', () => {
+        const { container } = render(
+            &lt;JotaiProvider>
+                &lt;StickyBarSkeleton />
+            &lt;/JotaiProvider>
+        );
+
+        const skeletonDiv =
+            container.querySelector('div[class*="skeleton"]');
+
+        expect(skeletonDiv).toBeTruthy();
+    });
+});</code></pre>
+            </div>
+        </div>
+
+        <p>
+            So the honest conclusion is: the shared test setup became more explicit, not magically simpler. That is still useful, but it should not be oversold.
+        </p>
+</section>
+
+<section id="mocking">
+<h2>Mocking atom setters in individual tests</h2>
+<p>At first glance, the Jotai version can look more complicated than the Recoil version: Recoil used vi.spyOn, while Jotai uses vi.hoisted and vi.mock. That does not mean the application behavior became more complex. It is a test mechanics difference. With Jotai hooks imported from an ES module, the module boundary has to be mocked before the component imports it.</p><p>So this is not the example where Jotai made tests simpler. The assertion stayed the same: clicking the revisions button should call the atom setter with the expected right-sidebar state. The testing improvement came from the shared wrapper setup with createStore(), not from every individual mock.</p>
+<div class="diff-grid">
+<div class="diff-side diff-before">
+<div class="diff-label">Before — revisions-button.test.tsx</div>
+<pre><code>import * as recoil from 'recoil';
+
+it('should call setRightSidebarState on click', async () => {
+    const mockSetSidebar = vi.fn();
+
+    // Spy on Recoil's hook
+    vi.spyOn(recoil, 'useSetRecoilState')
+        .mockReturnValue(mockSetSidebar);
+
+    render(&lt;MockWrapper>&lt;RevisionsButton />&lt;/MockWrapper>);
+
+    const button = await waitFor(() =>
+        screen.getByTestId(testId.promotionRevisionsButton)
+    );
+    fireEvent.click(button);
+
+    expect(mockSetSidebar).toHaveBeenCalledWith({
+        shouldRender: true,
+        isRightSidebarCollapsed: false,
+        showComments: false,
+        showRevisions: true,
+    });
+});</code></pre>
+</div>
+<div class="diff-side diff-after">
+<div class="diff-label">After — revisions-button.test.tsx</div>
+<pre><code>const { useSetAtomMock } = vi.hoisted(() => ({
+    useSetAtomMock: vi.fn(),
+}));
+
+vi.mock('jotai', async () => {
+    const actual =
+        await vi.importActual&lt;typeof import('jotai')>('jotai');
+    useSetAtomMock.mockImplementation(actual.useSetAtom);
+    return { ...actual, useSetAtom: useSetAtomMock };
+});
+
+it('should call setRightSidebarState on click', async () => {
+    const mockSetSidebar = vi.fn();
+    useSetAtomMock.mockReturnValue(mockSetSidebar);
+
+    render(&lt;MockWrapper>&lt;RevisionsButton />&lt;/MockWrapper>);
+
+    const button = await waitFor(() =>
+        screen.getByTestId(testId.promotionRevisionsButton)
+    );
+    fireEvent.click(button);
+
+    expect(mockSetSidebar).toHaveBeenCalledWith({
+        shouldRender: true,
+        isRightSidebarCollapsed: false,
+        showComments: false,
+        showRevisions: true,
+    });
+});</code></pre>
+</div>
+</div>
+<p>
+              This is not a conceptual change. It is a library-level change. The test still verifies the same behavior: clicking the revisions button opens the right sidebar with revisions visible and comments hidden.
+            </p>
+</section>
+<section id="debt">
+<h2>What we intentionally kept as-is</h2>
+<p>
+<a href="../" target="_self">Part 1</a> identified two <code>command-in-state</code> atoms: boolean values that do not describe the world, but act as signals to trigger side effects.
+            </p>
+<ul>
+<li><code>couponJobsCheckAtom</code> still triggers job fetching/polling</li>
+<li><code>filterAtom.rerenderFilters</code> still triggers filter UI synchronization after Excel import</li>
+</ul>
+<p>
+              Neither was fixed in phase one. Both were migrated 1:1 and marked as next-step candidates.
+            </p>
+<div class="callout warning">
+<strong>This is intentional technical debt.</strong>
+              Fixing it means redesigning application flow, not replacing a state library
+            </div>
+<p>
+              Fixing <code>couponJobsCheckAtom</code> means replacing the polling mechanism with explicit async actions. That is exactly what phase two is for. Mixing that into the Recoil → Jotai PR would have made the migration harder to review and riskier to test.
+            </p>
+</section>
+<section id="verdict">
+<h2>Verdict</h2>
+<p>
+    The plan held. The simple atom migration was as mechanical as expected. The composite promotion state mapped naturally from Recoil’s selector to Jotai’s <code>atom(get, set)</code>. The biggest production-side improvement was <code>atomWithReset</code> and the composite read/write atom. The test setup also became a little more explicit, but it stayed structurally similar to the Recoil setup.
+</p>
+<div class="split">
+<div class="mini-card">
+<h3>Exactly as planned</h3>
+<ul>
+<li>12 atoms migrated 1:1</li>
+<li>hook renaming with no logic changes</li>
+<li>command-in-state kept as-is</li>
+<li>all tests green after migration</li>
+</ul>
+</div>
+<div class="mini-card">
+    <h3>Better than expected</h3>
+    <ul>
+        <li><code>atomWithReset</code> + <code>RESET</code> is cleaner than manual default resets</li>
+        <li><code>createStore()</code> makes test state setup explicit, even if the wrapper stayed similar</li>
+        <li>composite atoms map well from Recoil selectors</li>
+        <li>no surprising component-level breakage</li>
+    </ul>
+</div>
+</div>
+<p>
+              In numbers: more than 115 source files touched, 12 atoms and one selector moved, test infrastructure rebuilt, and <code>recoil</code> removed from the dependency tree. Zero intentional behavior changes.
+            </p>
+<div class="quote">
+              Phase one did exactly what it was supposed to do: remove Recoil safely and prepare the ground for the actual architecture work
+            </div>
+</section>
+<section id="next">
+<h2>What comes next</h2>
+<p>
+              Recoil is gone. The foundation is Jotai. The next chapter is the one that was always more interesting architecturally: moving coupon jobs polling to Redux Toolkit.
+            </p>
+<p>The current polling system after phase one is functionally unchanged:</p>
+<span class="code-label">still true after phase one</span>
+<pre class=""><code>// Still: a boolean trigger
+couponJobsCheckAtom: boolean
+
+// Still: job data in an atom
+couponJobsAtom: CouponJob[] | undefined
+
+// Still: logic spread across a hook with useEffect + useInterval
+use-jobs-checker.ts: trigger → fetch → update → poll → notify</code></pre>
+<p>
+              Phase two should not touch the simple Jotai atoms. Navigation, sidebar, user, subsidiary and currency stay where they are. Redux Toolkit enters only for the coupon jobs polling process, because that is a sequence of named events with observable lifecycle, not just “a value that might change”.
+            </p>
+<span class="code-label">target direction for phase two</span>
+<pre class=""><code>couponJobs/triggerCheck          → intent to check
+couponJobs/startPolling          → polling started (from async thunk)
+couponJobs/jobsUpdated           → data received
+couponJobs/pollingFinished       → all jobs done
+couponJobs/pollingFailed         → error</code></pre>
+<div class="callout">
+<strong>Boundary after phase two:</strong>
+              if the state requires understanding a lifecycle, use Redux Toolkit. If it is a small shared value, keep it in Jotai
+            </div>
+</section>
+</div>
+</article>
+</div>
+<footer class="footer-note">
+<h2>Series</h2>
+<p>
+<a href="../" target="_self">Part 1</a> explained the decision. Part 2 removed Recoil and introduced Jotai everywhere without changing behavior. Part 3 should be the real architecture test: moving coupon jobs polling from a boolean trigger to an explicit Redux Toolkit flow
+      </p>
+</footer>
+</main>
+</body>
+</html>

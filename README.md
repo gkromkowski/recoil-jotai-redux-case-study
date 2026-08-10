@@ -46,9 +46,12 @@ The first migration should be deliberately boring: remove Recoil with minimal be
 
 `React` · `Recoil` · `Jotai` · `Redux Toolkit` · `Apollo Client` · `React Hook Form` · `state ownership` · `polling` · `async lifecycle`
 
-## Read the article
+## Read the articles
 
-The repository contains a static HTML version of the full case study in [`index.html`](./index.html).
+The repository contains a static GitHub Pages version of the case study:
+
+- **Part 1:** [`index.html`](./index.html) → `https://gkromkowski.github.io/recoil-jotai-redux-case-study/`
+- **Part 2:** [`part2/index.html`](./part2/index.html) → `https://gkromkowski.github.io/recoil-jotai-redux-case-study/part2/`
 
 ## Author
 
